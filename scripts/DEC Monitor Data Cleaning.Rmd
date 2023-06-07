@@ -1,0 +1,172 @@
+---
+title: "DEC Monitor Data Cleaning"
+output: html_notebook
+---
+Authors: Nelsha Athauda
+Email: Nrathauda@alaska.edu
+
+
+```{r Here, include=FALSE, message=F}
+here::i_am("scripts/DEC Data Assembly Compiled.Rmd")
+knitr::opts_knit$set(root.dir = here::here())
+```
+
+```{r Libraries}
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+library(here)
+library(stringr)
+```
+
+# File Upload
+```{r Read Data}
+raw_V2_data <- read.csv(here("raw_data", "AMP435_2094888-0.txt"))
+```
+
+# Remove bottom line descriptor, rename State Code, and remove space at the end of County Names
+```{r}
+DEC_data <- raw_V2_data %>%
+  head(-1) %>%
+  rename(STATE.CODE = X..STATE.CODE) %>%
+  mutate(COUNTY.NAME = str_trim(COUNTY.NAME, side = "right")) 
+
+table(DEC_data$COUNTY.NAME)
+table(DEC_data$SITE.ID)
+```
+# Format date variable
+```{r}
+DEC_data$COLLECTION.DATE <- as.character(DEC_data$COLLECTION.DATE)
+DEC_data$COLLECTION.DATE <- as.Date(DEC_data$COLLECTION.DATE, origin = "20000101", tryFormats = c("%Y%m%d"))
+DEC_data$Date <- DEC_data$COLLECTION.DATE
+DEC_data = DEC_data[,!(names(DEC_data) %in% c("COLLECTION.DATE"))]
+```
+
+# Eliminate readings with fewer than 75% of measurements (18 hours) for summarized hourly data
+```{r}
+avg_DEC_data <- DEC_data %>%
+  filter(`PCT.DAILY.OBS`>=75) %>%
+  filter(ifelse(`DURATION.DESC`=="1 HOUR",`NUM.DAILY.OBS`>=18,`NUM.DAILY.OBS`>0)) %>%
+  filter(`ARITHMETIC.MEAN`>0)
+```
+
+# Create Monitor ID Tags
+```{r}
+avg_DEC_data$STATE.CODE<- as.numeric(avg_DEC_data$STATE.CODE)
+avg_DEC_data$COUNTY.CODE<- as.numeric(avg_DEC_data$COUNTY.CODE)
+avg_DEC_data$SITE.ID<- as.numeric(avg_DEC_data$SITE.ID)
+
+avg_DEC_data <- avg_DEC_data %>%
+  mutate(MONITOR.ID = paste(STATE.CODE, COUNTY.CODE, SITE.ID, sep = "-"))
+
+table(avg_DEC_data$MONITOR.ID)
+```
+
+# Add in long/lat for monitor sites from EPA Website (WGS84)
+https://epa.maps.arcgis.com/apps/webappviewer/index.html?id=5f239fd3e72f424f98ef3d5def547eb5&extent=-146.2334,13.1913,-46.3896,56.5319
+
+```{r}
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-110-26"] <- "-134.510427" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-110-26"] <- "58.358875"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-110-27"] <- "-134.516499" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-110-27"] <- "58.365508"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-110-4"] <- "-134.567237"
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-110-4"] <- "58.388497"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-122-8"] <- "-151.069300"
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-122-8"] <- "60.489167"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-130-8"] <- "-131.650019"
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-130-8"] <- "55.351043"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-170-12"] <- "-149.106220" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-170-12"] <- "61.598898"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-170-13"] <- "-149.455255" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-170-13"] <- "61.598796"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-170-4"] <- "-150.252229" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-170-4"] <- "61.532508"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-170-8"] <- "-149.031655" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-170-8"] <- "61.534163"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-20-1004"] <- "-149.569707" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-20-1004"] <- "61.326700"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-20-18"] <- "-149.824602" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-20-18"] <- "61.205861"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-20-44"] <- "-149.817389" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-20-44"] <- "61.181083"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-20-52"] <- "-149.903111" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-20-52"] <- "61.215027"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-232-1"] <- "-135.321250" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-232-1"] <- "59.453150"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-232-2"] <- "-135.310530" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-232-2"] <- "59.460080"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-68-3"] <- "-148.967600" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-68-3"] <- "63.723200"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-90-10"] <- "-147.722461"
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-90-10"] <- "64.840672"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-90-29"] <- "-147.692461"
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-90-29"] <- "64.846506"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-90-33"] <- "-147.347208" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-90-33"] <- "64.752336"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-90-34"] <- "-147.727413" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-90-34"] <- "64.845690"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-90-35"] <- "-147.310279"
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-90-35"] <- "64.762641"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-90-39"] <- "-147.372278" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-90-39"] <- "64.759289"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-90-40"] <- "-147.693270" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-90-40"] <- "64.845930"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-90-4003"] <- "-147.872000" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-90-4003"] <- "64.839130"
+
+
+avg_DEC_data$Longitude <- avg_DEC_data$Longitude
+avg_DEC_data$Latitude <- avg_DEC_data$Latitude
+```
+
+# Create Priority Variable
+```{r}
+avg_DEC_data$Priority <- NA
+
+avg_DEC_data$Priority[avg_DEC_data$DURATION.DESC == "1 HOUR"] <- 1
+avg_DEC_data$Priority[avg_DEC_data$DURATION.DESC == "24 HOUR"] <- 2
+avg_DEC_data$Priority[avg_DEC_data$DURATION.DESC == "24-HR BLK AVG"] <- 3
+
+avg_DEC_data$Priority <- avg_DEC_data$Priority
+```
+
+# Select one measurement per site per day by Priority
+```{r}
+if (anyDuplicated(avg_DEC_data[, c("COUNTY.NAME", "SITE.ID", "Date", "MONITOR.ID")])) {
+  avg_DEC_data <- avg_DEC_data %>%
+    group_by(COUNTY.NAME, SITE.ID, Date, Latitude) %>%
+    mutate(has_duplicate = n() > 1) %>%
+    arrange(has_duplicate, Priority) %>%
+    filter(!has_duplicate | row_number() == 1) %>%
+    ungroup() %>%
+    select(-has_duplicate)
+}
+```
+
+```{r}
+write.csv(avg_DEC_data, here("clean_data", "Cleaned_DEC_Data_06072023.csv"))
+```

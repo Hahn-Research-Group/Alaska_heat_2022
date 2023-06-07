@@ -1,0 +1,82 @@
+---
+title: "PurpleAir_Cleaning"
+author: "Nelsha Athauda"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r Here, include=FALSE, message=F}
+here::i_am("Alaska_heat_2022/scripts/PurpleAir_Cleaning.Rmd")
+knitr::opts_knit$set(root.dir = here::here())
+
+library(here)
+```
+
+```{r Load packages, include=FALSE}
+library(tidyverse)
+library(readxl)
+library(ggplot2)
+library(lubridate)
+```
+
+```{r, echo=F, warning=FALSE}
+setwd(here("Alaska_heat_2022/raw_data/PurpleAir"))
+```
+
+# Combine all raw data into one dataset
+```{r Pull Data 81432223012, include=FALSE}
+fileNames <- list.files(path = here("Alaska_heat_2022/raw_Data/PurpleAir"), full.names = TRUE)
+dataList <- list()
+
+for (fileName in fileNames) {
+  data <- read.csv(fileName, header = TRUE, sep = ",", row.names=NULL)
+  dataList[[fileName]] <- data
+}
+
+raw_PA_data <- as.data.frame(do.call(rbind, dataList))
+dim(raw_PA_data)
+```
+
+# Create Usable Date Variable and fix rownames
+```{r}
+raw_PA_data$DateTime <- as_datetime(raw_PA_data$time_stamp)
+raw_PA_data$Date <- as_date(raw_PA_data$DateTime) # Leave in UTC
+
+row.names(raw_PA_data) <- c(1:nrow(raw_PA_data))
+```
+
+# Create a variable to measure percentage of measurements/day/site and remove observations with less than 75% of measurements per day
+```{r}
+# Group data by date and site
+daily_summary <- raw_PA_data %>%
+  group_by(Date = Date, SiteName) %>%
+  summarise(total_measurements = n()) %>%
+  ungroup()
+
+# Calculate the percentage of measurements per day at each site
+daily_summary <- daily_summary %>%
+  group_by(Date) %>%
+  mutate(percentage_measurements = (total_measurements/24*100)) %>%
+  ungroup()
+
+# Join to raw data
+raw_PA_data <- merge(raw_PA_data, daily_summary[, c("Date", "SiteName", "percentage_measurements")], by = c("Date", "SiteName"), all.x = TRUE)
+
+# Remove observation with less than 75% hourly data
+PA_data <- subset(raw_PA_data, percentage_measurements >= 75)
+```
+
+# Generate a single average for each day at each site
+```{r}
+PA_data_Clean <- aggregate(cbind(AveragePM2.5, percentage_measurements, Latitude, Longitude) ~ Date + SiteName, data = PA_data, FUN = mean)
+
+Final_df <- PA_data_Clean[order(PA_data_Clean$Date), ]
+```
+
+# Export Cleaned daily Pm2.5 averages at each site
+```{r}
+write.csv(Final_df, here("Alaska_heat_2022", "clean_data", "Cleaned_PurpleAir_Data_06072023.csv"))
+```
+
+
+
