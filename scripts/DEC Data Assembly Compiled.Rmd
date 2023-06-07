@@ -5,733 +5,171 @@ output: html_notebook
 Authors: Grace Kuiper, Nelsha Athauda
 Email: grace.kuiper@colostate.edu, nrathauda@alaska.edu
 
+
+```{r Here, include=FALSE, message=F}
+here::i_am("scripts/DEC Data Assembly Compiled.Rmd")
+knitr::opts_knit$set(root.dir = here::here())
+```
+
 ```{r Libraries}
 library(tidyverse)
-library(data.table)
 library(lubridate)
-library(eeptools)
 library(dplyr)
-library(readxl)
-library(geosphere)
-
-library(rnoaa)
-library(riem)
 library(here)
 library(stringr)
-
 ```
 
-####Import Department of Environmental Conservation data####
-
+# File Upload
 ```{r Read Data}
-raw_V1_data <- read_xlsx('C:/Users/nrathauda/OneDrive - University of Alaska/Alaska_heat_2022/raw_data/daily_88101_0819_NCORE_Garden_Parkgate_Butte.xlsx')
-  dim(raw_V1_data) # This is the old data, do not use
-
-raw_V2_data <- read.csv('C:/Users/nrathauda/OneDrive - University of Alaska/Alaska_heat_2022/raw_data/AMP435_2094888-0.txt')
-  dim(raw_V2_data)
-
-source(here("C:/Users/nrathauda/OneDrive - University of Alaska/Alaska_heat_2022/scripts/helper_functions/riem_helper_functions.R"))
-
-weather_data <- readRDS('C:/Users/nrathauda/OneDrive - University of Alaska/Alaska_heat_2022/raw_data/weather_data.rds')
+raw_V2_data <- read.csv(here("raw_data", "AMP435_2094888-0.txt"))
 ```
-# Remove bottom line descriptor and rename State Code
+
+# Remove bottom line descriptor, rename State Code, and remove space at the end of County Names
 ```{r}
 DEC_data <- raw_V2_data %>%
   head(-1) %>%
-  rename(STATE.CODE = X..STATE.CODE)
-
-colnames(DEC_data)
-```
-#Removing data from other counties or unecessary monitors
-Moniotrs 33,35, and 39 were removed as they are located in North Pole. Monitors 40, 4003, and 29 were removed as they only recorded a few years which were recorded by other monitors in the area. Monitor 4 was removed as it is located at Big Lake, too far from Anchorage. Monitors 12, 52 and 13 also only had very few years of data which were collected by monitor 8. 
-
-```{r}
-DEC_data <- DEC_data %>%
-  mutate(COUNTY.NAME = str_trim(COUNTY.NAME, side = "right")) # Removing a space at the end of county name variables
-
-dim(DEC_data)
-DEC_data <- subset(DEC_data, COUNTY.NAME %in% c("Anchorage", "Fairbanks North Star", "Matanuska-Susitna"))
-DEC_data <- subset(DEC_data, !SITE.ID %in% c(33,35,39,4,4003,29,40,12,13,52)) 
-
-
-dim(DEC_data)
+  rename(STATE.CODE = X..STATE.CODE) %>%
+  mutate(COUNTY.NAME = str_trim(COUNTY.NAME, side = "right")) 
 
 table(DEC_data$COUNTY.NAME)
 table(DEC_data$SITE.ID)
 ```
-
-#'Create Site ID variable
-```{r}
-unique(raw_V1_data$`SITE ID`)
-unique(DEC_data$SITE.ID) # New data has way more site IDs
-
-# Anchorage site IDS
-anc <- subset(DEC_data, COUNTY.NAME == "Anchorage")
-unique(anc$SITE.ID) #  18   44 1004
-unique(anc$COUNTY.CODE) # 20
-
-# Fairbanks site IDS
-fairb <- subset(DEC_data, COUNTY.NAME == "Fairbanks North Star")
-unique(fairb$SITE.ID) #    10   34 
-unique(fairb$COUNTY.CODE) # 90
-
-# Mat-su site IDS
-mats <- subset(DEC_data, COUNTY.NAME == "Matanuska-Susitna")
-unique(mats$SITE.ID) # 8
-unique(mats$COUNTY.CODE) # 170
-
-unique_rows <- unique(raw_V2_data[c("POC", "SITE.ID")])
-unique_rows_v1 <- unique(raw_V1_data[c("POC", "SITE ID")])
-
-table(DEC_data$SITE.ID)
-```
-
-```{r}
-Site_ID_key_df <- data.frame(COUNTY.CODE=c(20,20,20, 90,90, 170),
-                             Site_No=c(18,1004,44, 10,34, 8),
-                             Site_ID=c("02-020-0018",
-                                       "02-020-1004",
-                                       "02-020-0044",
-                                       "02-090-0010",
-                                       "02-090-0034", 
-                                       "02-170-0008"))
-
-DEC_data <- dplyr::rename(DEC_data,Site_No=`SITE.ID`) %>%
-  left_join(Site_ID_key_df,
-            by=c("COUNTY.CODE","Site_No"))
-```
-
-
-#'Format date variable
+# Format date variable
 ```{r}
 DEC_data$COLLECTION.DATE <- as.character(DEC_data$COLLECTION.DATE)
 DEC_data$COLLECTION.DATE <- as.Date(DEC_data$COLLECTION.DATE, origin = "20000101", tryFormats = c("%Y%m%d"))
-
 DEC_data$Date <- DEC_data$COLLECTION.DATE
 DEC_data = DEC_data[,!(names(DEC_data) %in% c("COLLECTION.DATE"))]
 ```
 
-
-
-
-#'Eliminate readings with fewer than 75% of measurements (18 hours) for summarized hourly data
+# Eliminate readings with fewer than 75% of measurements (18 hours) for summarized hourly data
 ```{r}
-dim(DEC_data)
-DEC_data <- DEC_data %>%
+avg_DEC_data <- DEC_data %>%
   filter(`PCT.DAILY.OBS`>=75) %>%
   filter(ifelse(`DURATION.DESC`=="1 HOUR",`NUM.DAILY.OBS`>=18,`NUM.DAILY.OBS`>0)) %>%
   filter(`ARITHMETIC.MEAN`>0)
-dim(DEC_data)
 ```
 
-
-####Reduce dataset to only include one reading per day per study site####
-This was a labor-intensive, manual approach. Some monitors were indicated by DEC
-to have higher priority over others. Furthermore, it was preferable to have
-averaged hourly measurements than single 24-hour measurements. On some days,
-there was only one measurement from a site; however, on others, there were multiple
-measurements taken. 
-
-First a dataset was created with all days during which
-there was only one measurement at a single site. Then for sites that had two or
-more measurements on a given day, the one collected by the highest-priority monitor
-was selected, then if there were multiple high-priority measurments, hourly
-measurements were preferentially selected. This process was repeated manually until
-a single measurement was extracted for each site for each day on which measurements
-were taken.
-
-#'First, assign priorities for different monitors using information provided by DEC.
-This version is if POC matches the original file's POC
+# Create Monitor ID Tags
 ```{r}
-POC_priority_key_df <- data.frame(Site_ID=c(
-                                       "02-020-0018", 
-                                       "02-020-0018", 
-                                       "02-020-0018", 
-                                       "02-020-1004",
-                                       "02-020-0044",
+avg_DEC_data$STATE.CODE<- as.numeric(avg_DEC_data$STATE.CODE)
+avg_DEC_data$COUNTY.CODE<- as.numeric(avg_DEC_data$COUNTY.CODE)
+avg_DEC_data$SITE.ID<- as.numeric(avg_DEC_data$SITE.ID)
 
-                                       "02-090-0010", # Older and has more values so is 1
-                                       "02-090-0034", 
-                                       "02-090-0034", 
-                                       "02-090-0034", 
-
-                                       "02-170-0008", 
-                                       "02-170-0008"),             
-                                          POC=c(1,2,3,3,1, 1,1,2,3, 1,3), 
-                                 POC_priority=c(1,1,1,1,1, 1,2,3,3, 1,2))
-
-
-DEC_data <- left_join(DEC_data,
-                      POC_priority_key_df,
-                      by=c("Site_ID","POC")) %>% 
-  replace_na(list(POC_priority = 0))
-```
-
-#' Assign priorities based on criteria described above
-Higher meas_priority means it is less prioritized
-```{r}
-meas_priority_key_df <- data.frame(POC_priority=c(1,1,1,
-                                                  2,2,2,
-                                                  3,3,3,
-                                                  0,0,0),
-                                   `DURATION.DESC`=c("1 HOUR","24 HOUR","24-HR BLK AVG",
-                                                     "1 HOUR","24 HOUR","24-HR BLK AVG",
-                                                     "1 HOUR","24 HOUR","24-HR BLK AVG",
-                                                     "1 HOUR","24 HOUR","24-HR BLK AVG"),
-                                   meas_priority=c(1,2,2,
-                                                   3,4,4,
-                                                   5,6,6,
-                                                   7,8,8)) 
-
-DEC_data_merge <- DEC_data %>%
-  left_join(meas_priority_key_df,
-            by=c("POC_priority",
-                 "DURATION.DESC"))
-
-DEC_priority <- DEC_data_merge %>%
-  group_by(Site_ID,Date) %>%
-  filter(meas_priority==min(meas_priority)) %>%
-  add_tally()
-
-table(DEC_priority$n) #Some sites have more than one measurement per day. 
-```
-
-#Cleaning duplicates
-```{r}
-DEC_priority_clean <- bind_rows(DEC_priority %>%
-                                  filter(n==1),
-                                DEC_priority %>%
-                                  filter(n>1) %>%
-                                  filter(`NUM.DAILY.OBS`==max(`NUM.DAILY.OBS`))) %>%
-  dplyr::select(-n) %>%
-  add_tally()
-table(DEC_priority_clean$n) 
-
-DEC_priority_clean <- bind_rows(DEC_priority_clean %>%
-                                  filter(n==1) %>%
-                                  mutate(`RANKING.NUMBER`=as.character(`RANKING.NUMBER`),
-                                         POC=as.character(POC)),
-                                DEC_priority_clean %>%
-                                  filter(n>1) %>%
-                                  filter(POC_priority==0) %>%
-                                  group_by( `STATE.CODE`,
-                                            `COUNTY.CODE`,
-                                            `COUNTY.NAME`,
-                                            Site_No,
-                                            `PARAMETER.CODE`,    
-                                            `DURATION.CODE`,
-                                            `DURATION.DESC`,
-                                            `UNIT.CODE`,
-                                            `UNIT.DESC`,         
-                                            `EDT.ID`,
-                                            `NUM.DAILY.OBS`,
-                                            `PCT.DAILY.OBS`,
-                                            `MAX.HOUR`,
-                                            `DAILY.CRITERIA.IND`,
-                                            Site_ID,
-                                            Date,
-                                            POC_priority,
-                                            meas_priority,n) %>%
-                                  summarise(`ARITHMETIC.MEAN`=mean(`ARITHMETIC.MEAN`),
-                                            `MAX.VALUE`=max(`MAX.VALUE`),
-                                            `RANKING.NUMBER`=paste(`RANKING.NUMBER`,collapse="/"),
-                                            POC=paste(POC,collapse="/"),
-                                            .groups="drop"),
-                                DEC_priority_clean %>%
-                                  filter(n==2) %>%
-                                  filter(POC_priority>0) %>% 
-                                  dplyr::select(-`EDT.ID`,
-                                                -`RANKING.NUMBER`) %>%
-                                  distinct() %>%
-                                  mutate(POC=as.character(POC))) %>%
-  dplyr::select(-n) %>%
-  group_by(Site_ID,Date) %>%
-  add_tally()
-
-table(DEC_priority_clean$n)
-dim(DEC_priority_clean)
-```
-
-#'Average Anchorage site monitors
-```{r}
-cleaned_DEC_data <- DEC_priority_clean %>%
-  select(-n,-POC_priority,-meas_priority) %>%
-  rename_at(vars(contains(".")),.funs=~gsub("\\."," ",.)) 
-```
-
-```{r}
-Site_1004_data <- cleaned_DEC_data %>%
-  filter(Site_ID=="02-020-1004")
-Anchorage_data <- cleaned_DEC_data %>%
-  filter(`Site_ID`=="02-020-0018") %>%
-  full_join(Site_1004_data,by=c("Date","COUNTY CODE","COUNTY NAME","STATE CODE","UNIT CODE","UNIT DESC"))
-Site_No.x <- Anchorage_data$Site_No.x
-Site_No.y <- Anchorage_data$Site_No.y
-```
-
-```{r}
-Anchorage_avg_data <- Anchorage_data %>%
-  mutate_all(~replace(.,is.na(.),NA)) %>%
-  rename_at(vars(contains(".x")),.funs=~gsub(".x",paste("_",unique(Site_No.x[which(!is.na(Site_No.x))]),sep=""),.)) %>%
-  rename_at(vars(contains(".y")),.funs=~gsub(".y",paste("_",unique(Site_No.y[which(!is.na(Site_No.y))]),sep=""),.)) %>%
-  group_by(Date) %>%
-  mutate_at(vars(c(`Site_No_1004`,`Site_No_18`,`PARAMETER CODE_18`,`PARAMETER CODE_1004`,
-                   `POC_1004`,`POC_18`,`DURATION CODE_1004`,`DURATION CODE_18`,
-                   `DURATION DESC_1004`,`DURATION DESC_18`,`NUM DAILY OBS_1004`,`NUM DAILY OBS_18`,
-                   `PCT DAILY OBS_1004`,`PCT DAILY OBS_18`,`DAILY CRITERIA IND_1004`,
-                   `DAILY CRITERIA IND_18`,`EDT ID_1004`,`EDT ID_18`,`RANKING NUMBER_1004`,
-                   `RANKING NUMBER_18`,Site_ID_1004,Site_ID_18)),
-            .funs=list(~as.character(.))) %>% # Updated 4/20
-  mutate(`ARITHMETIC MEAN`=mean(c(`ARITHMETIC MEAN_18`,`ARITHMETIC MEAN_1004`),na.rm=TRUE),
-         `Site_No`=ifelse(is.na(`ARITHMETIC MEAN_18`),Site_No_1004,
-                          ifelse(is.na(`ARITHMETIC MEAN_1004`),Site_No_18,paste(Site_No_1004,Site_No_18,sep="/"))),
-         `Site_ID`=ifelse(is.na(`ARITHMETIC MEAN_18`),Site_ID_1004,
-                          ifelse(is.na(`ARITHMETIC MEAN_1004`),Site_ID_18,paste(Site_ID_1004,Site_ID_18,sep="/"))),
-         `PARAMETER CODE`=ifelse(is.na(`ARITHMETIC MEAN_18`),`PARAMETER CODE_1004`,
-                                 ifelse(is.na(`ARITHMETIC MEAN_1004`),`PARAMETER CODE_18`,
-                                        paste(`PARAMETER CODE_1004`,`PARAMETER CODE_18`,sep="/"))),
-         `POC`=ifelse(is.na(`ARITHMETIC MEAN_18`),POC_1004,ifelse(is.na(`ARITHMETIC MEAN_1004`),POC_18,
-                                                                  paste(POC_1004,POC_18,sep="/"))),
-         `DURATION CODE`=ifelse(is.na(`ARITHMETIC MEAN_18`),`DURATION CODE_1004`,
-                                ifelse(is.na(`ARITHMETIC MEAN_1004`),`DURATION CODE_18`,
-                                       paste(`DURATION CODE_1004`,`DURATION CODE_18`,sep="/"))),
-         `DURATION DESC`=ifelse(is.na(`ARITHMETIC MEAN_18`),`DURATION DESC_1004`,
-                                ifelse(is.na(`ARITHMETIC MEAN_1004`),`DURATION DESC_18`,
-                                       paste(`DURATION DESC_1004`,`DURATION DESC_18`,sep="/"))),
-         `NUM DAILY OBS`=ifelse(is.na(`ARITHMETIC MEAN_18`),`NUM DAILY OBS_1004`,
-                                ifelse(is.na(`ARITHMETIC MEAN_1004`),`NUM DAILY OBS_18`,
-                                       paste(`NUM DAILY OBS_1004`,`NUM DAILY OBS_18`,sep="/"))),
-         `PCT DAILY OBS`=ifelse(is.na(`ARITHMETIC MEAN_18`),`PCT DAILY OBS_1004`,
-                                ifelse(is.na(`ARITHMETIC MEAN_1004`),`PCT DAILY OBS_18`,
-                                       paste(`PCT DAILY OBS_1004`,`PCT DAILY OBS_18`,sep="/"))),
-         `DAILY CRITERIA IND`=ifelse(is.na(`ARITHMETIC MEAN_18`),`DAILY CRITERIA IND_1004`,
-                                     ifelse(is.na(`ARITHMETIC MEAN_1004`),`DAILY CRITERIA IND_18`,
-                                            paste(`DAILY CRITERIA IND_1004`,`DAILY CRITERIA IND_18`,sep="/"))),
-         `EDT ID`=ifelse(is.na(`ARITHMETIC MEAN_18`),`EDT ID_1004`,
-                         ifelse(is.na(`ARITHMETIC MEAN_1004`),`EDT ID_18`,
-                                paste(`EDT ID_1004`,`EDT ID_18`,sep="/"))),
-         `RANKING NUMBER`=ifelse(is.na(`ARITHMETIC MEAN_18`),`RANKING NUMBER_1004`,
-                                 ifelse(is.na(`ARITHMETIC MEAN_1004`),`RANKING NUMBER_18`,
-                                        paste(`RANKING NUMBER_1004`,`RANKING NUMBER_18`,sep="/"))),
-         `MAX VALUE`=max(c(`MAX VALUE_18`,`MAX VALUE_1004`),na.rm=TRUE),
-         `MAX HOUR`=ifelse(max(c(`MAX VALUE_18`,`MAX VALUE_1004`),na.rm=TRUE)==`MAX VALUE_18`,`MAX HOUR_18`,
-                           ifelse(max(`MAX VALUE_18`,`MAX VALUE_1004`,na.rm=TRUE)==`MAX VALUE_1004`,`MAX HOUR_1004`,NA))) %>%
-  select(-contains("_18"),-contains("_1004")) %>%
-  filter(!is.na(Site_No))
-```
-
-```{r}
-avg_DEC_data <- cleaned_DEC_data %>%
-  ungroup() %>%
-  mutate_at(vars(c(`Site_No`,`PARAMETER CODE`,`POC`,`DURATION CODE`,`DURATION DESC`,
-                   `NUM DAILY OBS`,`PCT DAILY OBS`,`DAILY CRITERIA IND`,`EDT ID`,
-                   `RANKING NUMBER`,Site_ID)),
-            .funs=funs(as.character)) %>%
-  filter(`COUNTY NAME`!="Anchorage") %>%
-  bind_rows(Anchorage_avg_data)
-
-dim(avg_DEC_data)
-```
-# Duplicate the duplicate cleaning process for Fairbanks
-```{r}
-Site_1010_data <- avg_DEC_data %>%
-  filter(Site_ID=="02-090-0010")
-
-Fairbanks_data <- avg_DEC_data %>%
-  filter(`Site_ID`=="02-090-0034") %>%
-  full_join(Site_1010_data,by=c("Date","COUNTY CODE","COUNTY NAME","STATE CODE","UNIT CODE","UNIT DESC"))
-Site_No.x <- Fairbanks_data$Site_No.x
-Site_No.y <- Fairbanks_data$Site_No.y
-```
-
-```{r}
-Fairbanks_avg_data <- Fairbanks_data %>%
-  mutate_all(~replace(.,is.na(.),NA)) %>%
-  rename_at(vars(contains(".x")),.funs=~gsub(".x",paste("_",unique(Site_No.x[which(!is.na(Site_No.x))]),sep=""),.)) %>%
-  rename_at(vars(contains(".y")),.funs=~gsub(".y",paste("_",unique(Site_No.y[which(!is.na(Site_No.y))]),sep=""),.)) %>%
-  group_by(Date) %>%
-  mutate_at(vars(c(`Site_No_10`,`Site_No_34`,`PARAMETER CODE_34`,`PARAMETER CODE_10`,
-                   `POC_10`,`POC_34`,`DURATION CODE_10`,`DURATION CODE_34`,
-                   `DURATION DESC_10`,`DURATION DESC_34`,`NUM DAILY OBS_10`,`NUM DAILY OBS_34`,
-                   `PCT DAILY OBS_10`,`PCT DAILY OBS_34`,`DAILY CRITERIA IND_10`,
-                   `DAILY CRITERIA IND_34`,`EDT ID_10`,`EDT ID_34`,`RANKING NUMBER_10`,
-                   `RANKING NUMBER_34`,Site_ID_10,Site_ID_34)),
-            .funs=list(~as.character(.))) %>% 
-  mutate(`ARITHMETIC MEAN`=mean(c(`ARITHMETIC MEAN_34`,`ARITHMETIC MEAN_10`),na.rm=TRUE),
-         `Site_No`=ifelse(is.na(`ARITHMETIC MEAN_34`),Site_No_10,
-                          ifelse(is.na(`ARITHMETIC MEAN_10`),Site_No_34,paste(Site_No_10,Site_No_34,sep="/"))),
-         `Site_ID`=ifelse(is.na(`ARITHMETIC MEAN_34`),Site_ID_10,
-                          ifelse(is.na(`ARITHMETIC MEAN_10`),Site_ID_34,paste(Site_ID_10,Site_ID_34,sep="/"))),
-         `PARAMETER CODE`=ifelse(is.na(`ARITHMETIC MEAN_34`),`PARAMETER CODE_10`,
-                                 ifelse(is.na(`ARITHMETIC MEAN_10`),`PARAMETER CODE_34`,
-                                        paste(`PARAMETER CODE_10`,`PARAMETER CODE_34`,sep="/"))),
-         `POC`=ifelse(is.na(`ARITHMETIC MEAN_34`),POC_10,ifelse(is.na(`ARITHMETIC MEAN_10`),POC_34,
-                                                                  paste(POC_10,POC_34,sep="/"))),
-         `DURATION CODE`=ifelse(is.na(`ARITHMETIC MEAN_34`),`DURATION CODE_10`,
-                                ifelse(is.na(`ARITHMETIC MEAN_10`),`DURATION CODE_34`,
-                                       paste(`DURATION CODE_10`,`DURATION CODE_34`,sep="/"))),
-         `DURATION DESC`=ifelse(is.na(`ARITHMETIC MEAN_34`),`DURATION DESC_10`,
-                                ifelse(is.na(`ARITHMETIC MEAN_10`),`DURATION DESC_34`,
-                                       paste(`DURATION DESC_10`,`DURATION DESC_34`,sep="/"))),
-         `NUM DAILY OBS`=ifelse(is.na(`ARITHMETIC MEAN_34`),`NUM DAILY OBS_10`,
-                                ifelse(is.na(`ARITHMETIC MEAN_10`),`NUM DAILY OBS_34`,
-                                       paste(`NUM DAILY OBS_10`,`NUM DAILY OBS_34`,sep="/"))),
-         `PCT DAILY OBS`=ifelse(is.na(`ARITHMETIC MEAN_34`),`PCT DAILY OBS_10`,
-                                ifelse(is.na(`ARITHMETIC MEAN_10`),`PCT DAILY OBS_34`,
-                                       paste(`PCT DAILY OBS_10`,`PCT DAILY OBS_34`,sep="/"))),
-         `DAILY CRITERIA IND`=ifelse(is.na(`ARITHMETIC MEAN_34`),`DAILY CRITERIA IND_10`,
-                                     ifelse(is.na(`ARITHMETIC MEAN_10`),`DAILY CRITERIA IND_34`,
-                                            paste(`DAILY CRITERIA IND_10`,`DAILY CRITERIA IND_34`,sep="/"))),
-         `EDT ID`=ifelse(is.na(`ARITHMETIC MEAN_34`),`EDT ID_10`,
-                         ifelse(is.na(`ARITHMETIC MEAN_10`),`EDT ID_34`,
-                                paste(`EDT ID_10`,`EDT ID_34`,sep="/"))),
-         `RANKING NUMBER`=ifelse(is.na(`ARITHMETIC MEAN_34`),`RANKING NUMBER_10`,
-                                 ifelse(is.na(`ARITHMETIC MEAN_10`),`RANKING NUMBER_34`,
-                                        paste(`RANKING NUMBER_10`,`RANKING NUMBER_34`,sep="/"))),
-         `MAX VALUE`=max(c(`MAX VALUE_34`,`MAX VALUE_10`),na.rm=TRUE),
-         `MAX HOUR`=ifelse(max(c(`MAX VALUE_34`,`MAX VALUE_10`),na.rm=TRUE)==`MAX VALUE_34`,`MAX HOUR_34`,
-                           ifelse(max(`MAX VALUE_34`,`MAX VALUE_10`,na.rm=TRUE)==`MAX VALUE_10`,`MAX HOUR_10`,NA))) %>%
-  select(-contains("_34"),-contains("_10")) %>%
-  filter(!is.na(Site_No))
-```
-
-```{r}
 avg_DEC_data <- avg_DEC_data %>%
-  ungroup() %>%
-  mutate_at(vars(c(`Site_No`,`PARAMETER CODE`,`POC`,`DURATION CODE`,`DURATION DESC`,
-                   `NUM DAILY OBS`,`PCT DAILY OBS`,`DAILY CRITERIA IND`,`EDT ID`,
-                   `RANKING NUMBER`,Site_ID)),
-            .funs=funs(as.character)) %>%
-  filter(`COUNTY NAME`!="Fairbanks") %>%
-  bind_rows(Fairbanks_avg_data)
+  mutate(MONITOR.ID = paste(STATE.CODE, COUNTY.CODE, SITE.ID, sep = "-"))
+
+table(avg_DEC_data$MONITOR.ID)
+```
+
+# Add in long/lat for monitor sites from EPA Website (WGS84)
+```{r}
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-110-26"] <- "-134.510427" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-110-26"] <- "58.358875"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-110-27"] <- "-134.516499" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-110-27"] <- "58.365508"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-110-4"] <- "-134.567237"
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-110-4"] <- "58.388497"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-122-8"] <- "-151.069300"
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-122-8"] <- "60.489167"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-130-8"] <- "-131.650019"
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-130-8"] <- "55.351043"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-170-12"] <- "-149.106220" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-170-12"] <- "61.598898"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-170-13"] <- "-149.455255" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-170-13"] <- "61.598796"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-170-4"] <- "-150.252229" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-170-4"] <- "61.532508"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-170-8"] <- "-149.031655" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-170-8"] <- "61.534163"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-20-1004"] <- "-149.569707" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-20-1004"] <- "61.326700"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-20-18"] <- "-149.824602" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-20-18"] <- "61.205861"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-20-44"] <- "-149.817389" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-20-44"] <- "61.181083"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-20-52"] <- "-149.903111" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-20-52"] <- "61.215027"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-232-1"] <- "-135.321250" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-232-1"] <- "59.453150"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-232-2"] <- "-135.310530" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-232-2"] <- "59.460080"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-68-3"] <- "-148.967600" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-68-3"] <- "63.723200"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-90-10"] <- "-147.722461"
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-90-10"] <- "64.840672"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-90-29"] <- "-147.692461"
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-90-29"] <- "64.846506"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-90-33"] <- "-147.347208" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-90-33"] <- "64.752336"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-90-34"] <- "-147.727413" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-90-34"] <- "64.845690"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-90-35"] <- "-147.310279"
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-90-35"] <- "64.762641"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-90-39"] <- "-147.372278" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-90-39"] <- "64.759289"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-90-40"] <- "-147.693270" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-90-40"] <- "64.845930"
+
+avg_DEC_data$Longitude[avg_DEC_data$MONITOR.ID == "2-90-4003"] <- "-147.872000" 
+avg_DEC_data$Latitude[avg_DEC_data$MONITOR.ID == "2-90-4003"] <- "64.839130"
+
+
+avg_DEC_data$Longitude <- avg_DEC_data$Longitude
+avg_DEC_data$Latitude <- avg_DEC_data$Latitude
+```
+
+# Create Priority Variable
+```{r}
+avg_DEC_data$Priority <- NA
+
+avg_DEC_data$Priority[avg_DEC_data$DURATION.DESC == "1 HOUR"] <- 1
+avg_DEC_data$Priority[avg_DEC_data$DURATION.DESC == "24 HOUR"] <- 2
+avg_DEC_data$Priority[avg_DEC_data$DURATION.DESC == "24-HR BLK AVG"] <- 3
+
+avg_DEC_data$Priority <- avg_DEC_data$Priority
+```
+
+# Select one measurement per site per day by Priority
+```{r}
+if (anyDuplicated(avg_DEC_data[, c("COUNTY.NAME", "SITE.ID", "Date", "MONITOR.ID")])) {
+  avg_DEC_data <- avg_DEC_data %>%
+    group_by(COUNTY.NAME, SITE.ID, Date, Latitude) %>%
+    mutate(has_duplicate = n() > 1) %>%
+    arrange(has_duplicate, Priority) %>%
+    filter(!has_duplicate | row_number() == 1) %>%
+    ungroup() %>%
+    select(-has_duplicate)
+}
 
 dim(avg_DEC_data)
 ```
 
-#' Add in long/lat for monitor sites
 ```{r}
-midPoint(c(-149.82460,61.205861),c(-149.56972,61.32669)) # -149.6974 61.26634
-long_key <- c("02-020-0018" = "-149.82460", "02-170-0008" = "-149.031655",
-              "02-020-1004" = "-149.56972", "02-090-0034" = "-147.72727",
-              "02-020-1004/02-020-0018" = "-149.6974")
-lat_key <- c("02-020-0018" = "61.205861", "02-170-0008" = "61.534163",
-             "02-020-1004" = "61.32669", "02-090-0034" = "64.8458",
-             "02-020-1004/02-020-0018" = "61.26634")
-
-Longitude <- avg_DEC_data$Site_ID
-Longitude <- recode(Longitude,!!!long_key)
-
-Latitude <- avg_DEC_data$Site_ID
-Latitude <- recode(Latitude,!!!lat_key)
-
-avg_DEC_data$PM_Longitude <- Longitude
-avg_DEC_data$PM_Latitude <- Latitude
+write.csv(avg_DEC_data, here("clean_data", "Cleaned_DEC_Data_05302023.csv"))
 ```
-
-
-#'Here, the dataset is complete, so a .csv file will be saved with the single daily measurements.
-```{r}
-write.csv(avg_DEC_data,'C:/Users/nrathauda/OneDrive - University of Alaska/Alaska_heat_2022/clean_data/DEC_data.csv')
-
-avg_DEC_data <- avg_DEC_data[order(avg_DEC_data$Date), ]
-
-dim(avg_DEC_data)
-```
-
-#'Read in DEC PM2.5 data
-```{r}
-weather_DEC_data <- avg_DEC_data %>%
-  mutate(date=as.Date(Date,format=c("%m/%d/%Y"))) #%>% # Changed tryformat to format
-```
-
-
-
-```{r}
-weather_DEC_data$Date <- as.character(weather_DEC_data$Date)
-weather_DEC_data$Date <- as.Date(weather_DEC_data$Date, origin = '2000-01-01', tryFormats = c("%Y-%m-%d")) 
-weather_DEC_data$date <- weather_DEC_data$Date 
-
-sum(is.na(weather_DEC_data$Site_ID))
-```
-
-#'Merge HI data with PM2.5 data
-```{r}
-weather_DEC_data$date <- weather_DEC_data$Date
-
-weather_DEC_data <- weather_DEC_data %>%
-  full_join(weather_data,by=c("date","Site_ID")) %>%
-  mutate(month=substr(date,6,7)) %>%
-  mutate(quarter=ifelse(grepl("01|02|03",month),
-                        "Quarter 1",
-                        ifelse(grepl("04|05|06",month),
-                               "Quarter 2",
-                               ifelse(grepl("07|08|09",month),
-                                      "Quarter 3",
-                                      "Quarter 4"))))
-
-weather_DEC_data = weather_DEC_data[,!(names(weather_DEC_data) %in% c("X"))]
-```
-
-
-```{r}
-exp_df <- weather_DEC_data %>%
-  mutate(date=as.Date(date))
-
-names(exp_df) <- gsub("\\ ", ".", names(exp_df)) # Changed periods to spaces
-colnames(exp_df)
-```
-
-
-```{r}
-# exclude non-finite values from the range of dates
-valid_dates <- exp_df$date[is.finite(exp_df$date)]
-if (length(valid_dates) == 0) {
-  stop("Error: 'date' column contains no valid dates.")
-}
-
-# generate a sequence of dates
-every.day <- seq(from=min(valid_dates), to=max(valid_dates), by="1 day")
-```
-
-#'Create dataframe of every day 
-
-```{r}
-every.day <- seq(min(as.Date(exp_df$date)), max(as.Date(exp_df$date)), by="1 day")
-every.day <- rep(every.day,3)
-every.day <- data.frame(date=every.day,`COUNTY.NAME`=rep(c("Anchorage","Fairbanks North Star",
-                                                           "Matanuska-Susitna"),each=length(every.day)/3))
-
-sum(is.na(exp_df$date))
-sum(is.na(exp_df$Date)) # Date is the bad one
-dim(exp_df)
-
-
-daily_df <- exp_df %>%
-  arrange(COUNTY.NAME,Date) %>%
-  full_join(every.day, by=c("COUNTY.NAME","date"))
-
-dim(daily_df)
-```
-
-
-#'Identify duplicated days
-```{r}
-duplicate_data <- daily_df %>%
-  group_by(`COUNTY.NAME`,`date`) %>%
-  add_tally() %>%
-  filter(n>1) %>%
-  arrange(date,`COUNTY.NAME`) 
-table(duplicate_data$COUNTY.NAME,duplicate_data$Site_ID)
-```
-
-
-#'Remove duplicate observations for multiple Anchorage sites
-```{r}
-daily_df <- daily_df %>%
-  group_by(`COUNTY.NAME`,`date`) %>%
-  add_tally() %>%
-  mutate(temp_mean_PM=mean(ARITHMETIC.MEAN,na.rm=TRUE))
-Anchorage_daily_df <- daily_df %>%
-  filter(COUNTY.NAME=="Anchorage")
-new_Anchorage_daily_df <- as.data.frame(Anchorage_daily_df[1,])
-for (i in 2:nrow(Anchorage_daily_df)) {
-  if (i/200==ceiling(i/200)) {
-    print(paste0("Working on ",i," of ",nrow(Anchorage_daily_df)))
-  }
-  if (Anchorage_daily_df[i,"n"]==1) {
-    new_Anchorage_daily_df[nrow(new_Anchorage_daily_df)+1,] <- Anchorage_daily_df[i,]
-  } else if(Anchorage_daily_df[i,"n"]>1) {
-    if(is.na(Anchorage_daily_df[i,"temp_mean_PM"])) {
-      if (Anchorage_daily_df[i,"Site_ID"]=="02-020-1004/02-020-0018") {
-        new_Anchorage_daily_df[nrow(new_Anchorage_daily_df)+1,] <- Anchorage_daily_df[i,]
-      }
-    } else if (!is.na(Anchorage_daily_df[i,"temp_mean_PM"]) & !is.na(Anchorage_daily_df[i,"ARITHMETIC.MEAN"]) &
-               Anchorage_daily_df[i,"ARITHMETIC.MEAN"]==Anchorage_daily_df[i,"temp_mean_PM"]) {
-      new_Anchorage_daily_df[nrow(new_Anchorage_daily_df)+1,] <- Anchorage_daily_df[i,]
-    }
-  }
-}
-new_daily_df <- bind_rows(daily_df %>%
-                            filter(COUNTY.NAME!="Anchorage"),
-                          new_Anchorage_daily_df) %>%
-  dplyr::select(-n,-temp_mean_PM)
-```
-#'Remove duplicate observations for multiple Fairbanks sites
-```{r}
-daily_df <- daily_df %>%
-  group_by(`COUNTY.NAME`,`date`) %>%
-  add_tally() %>%
-  mutate(temp_mean_PM=mean(ARITHMETIC.MEAN,na.rm=TRUE))
-Fairbanks_daily_df <- daily_df %>%
-  filter(COUNTY.NAME=="Fairbanks North Star")
-new_Fairbanks_daily_df <- as.data.frame(Fairbanks_daily_df[1,])
-for (i in 2:nrow(Fairbanks_daily_df)) {
-  if (i/1000==ceiling(i/1000)) {
-    print(paste0("Working on ",i," of ",nrow(Fairbanks_daily_df)))
-  }
-  if (Fairbanks_daily_df[i,"n"]==1) {
-    new_Fairbanks_daily_df[nrow(new_Fairbanks_daily_df)+1,] <- Fairbanks_daily_df[i,]
-  } else if(Fairbanks_daily_df[i,"n"]>1) {
-    if(is.na(Fairbanks_daily_df[i,"temp_mean_PM"])) {
-      if (Fairbanks_daily_df[i,"Site_ID"]=="02-090-0010/02-090-0034") {
-        new_Fairbanks_daily_df[nrow(new_Fairbanks_daily_df)+1,] <- Fairbanks_daily_df[i,]
-      }
-    } else if (!is.na(Fairbanks_daily_df[i,"temp_mean_PM"]) & !is.na(Fairbanks_daily_df[i,"ARITHMETIC.MEAN"]) &
-               Fairbanks_daily_df[i,"ARITHMETIC.MEAN"]==Fairbanks_daily_df[i,"temp_mean_PM"]) {
-      new_Fairbanks_daily_df[nrow(new_Fairbanks_daily_df)+1,] <- Fairbanks_daily_df[i,]
-    }
-  }
-}
-new_daily_df <- bind_rows(daily_df %>%
-                            filter(COUNTY.NAME!="Fairbanks"),
-                          new_Fairbanks_daily_df) %>%
-  dplyr::select(-nn,-temp_mean_PM)
-```
-
-####Impute for PM2.5 for Anchorage####
-```{r}
-new_daily_df_mod <- new_daily_df %>%
-  arrange(COUNTY.NAME,date) %>%
-  group_by(COUNTY.NAME) %>%
-  mutate(ARITHMETIC.MEAN_lag1=lag(ARITHMETIC.MEAN,1),
-         ARITHMETIC.MEAN_lag2=lag(ARITHMETIC.MEAN,2),
-         ARITHMETIC.MEAN_lead1=lead(ARITHMETIC.MEAN,1),
-         ARITHMETIC.MEAN_lead2=lead(ARITHMETIC.MEAN,2)) %>%
-  mutate(ARITHMETIC.MEAN=ifelse(is.na(ARITHMETIC.MEAN),
-                                (ARITHMETIC.MEAN_lag1+ARITHMETIC.MEAN_lead1)/2,
-                                ARITHMETIC.MEAN)) %>%
-  mutate(ARITHMETIC.MEAN=ifelse(is.na(ARITHMETIC.MEAN) & is.na(ARITHMETIC.MEAN_lag1),
-                                (ARITHMETIC.MEAN_lag2+ARITHMETIC.MEAN_lead1)/2,
-                                ifelse(is.na(ARITHMETIC.MEAN) & is.na(ARITHMETIC.MEAN_lead1),
-                                       (ARITHMETIC.MEAN_lag1+ARITHMETIC.MEAN_lead2)/2,
-                                       ARITHMETIC.MEAN)))
-```
-
-
-####Remove Empty Rows####
-```{r}
-dim(new_daily_df_mod)
-
-new_daily_df_mod <- subset(new_daily_df_mod, !(is.na(ARITHMETIC.MEAN))) # Remove rows without PM values
-daily_df_final <- new_daily_df_mod[!duplicated(new_daily_df_mod), ] # Remove any duplicated rows
-
-daily_df_final <- daily_df_final %>%
-  distinct(ARITHMETIC.MEAN, date, COUNTY.NAME, Site_No, Site_ID, DURATION.DESC, .keep_all = TRUE)
-
-
-dim(daily_df_final)
-```
-###Remove rows with lower POC value for records with the same date and Site_No###
-
-```{r}
-daily_df_final <- daily_df_final %>%
-  group_by(date, Site_No) %>%
-  filter(POC == min(POC)) %>%
-  ungroup()
-
-dim(daily_df_final)
-```
-
-####Merge and save final exposure dataset####
-```{r}
-# daily_df_final <- daily_df_final %>%
-#   mutate(Site_ID=as.character(Site_ID)) %>%
-#   mutate(Site_ID=ifelse(!is.na(Site_ID),Site_ID,
-#                         ifelse(COUNTY.NAME=="Anchorage","02-020-1004/02-020-0018",
-#                                ifelse(COUNTY.NAME=="Fairbanks North Star","02-090-0034",
-#                                       "02-170-0008"))))
-daily_df_final <- daily_df_final %>%
-  dplyr::select(-contains("lead"),-contains("lag"),
-                -contains("less"))
-```
-
-###Calculate Averages for days with multiple measurements at the same site
-```{r}
-# Detect days with multiple measurements at the same site
-duplicated_rows <- duplicated(daily_df_final[, c("ARITHMETIC.MEAN", "date", "COUNTY.NAME")])
-table(duplicated_rows)
-```
-
-
-```{r}
-# Create a subset of all duplicated rows
-duplicated_rows <- daily_df_final %>%
-  group_by(date, COUNTY.NAME) %>%
-  filter(n() > 1) %>%
-  ungroup()
-dim(duplicated_rows) 
-
-# Fill in the weather data for those averaged PM values that don't have weather data
-filled_rows <- duplicated_rows %>%
-  group_by(date) %>%
-  fill(day_tmpf, station_id,name,distance,day_tmpf,day_relh,day_HI,n_hr_meas_tmpf,n_hr_meas_relh,n_hr_meas_HI, .direction = "downup") %>%
-  ungroup()
-
-  # Create a new subset to drop the rows used to create averages
-  Cleaned_unique_duplicated_Rows <- subset(filled_rows, NUM.DAILY.OBS == "1/1")
-  dim(Cleaned_unique_duplicated_Rows) 
-
-# Remove the duplicated rows and add in the cleaned up unique values from the duplicates
-dim(daily_df_final) #15798    37
-daily_df_finalwithoutdupes <- anti_join(daily_df_final, duplicated_rows)
-dim(daily_df_finalwithoutdupes) #11229    37
-
-Final_df <- rbind(daily_df_finalwithoutdupes, Cleaned_unique_duplicated_Rows)
-  dim(Final_df) #12752    37
-  Final_df <- Final_df[order(Final_df$date), ]
-```
-
-```{r}
-write.csv(Final_df, "C:/Users/nrathauda/OneDrive - University of Alaska/Alaska_heat_2022/clean_data/Cleaned_DEC_Data_05032023.csv")
-  dim(Final_df) # 12752
-  View(Final_df)
-```
-
-Check: Dates with more than three obs
-```{r}
-# Count occurrences of each date
-date_counts <- table(Final_df$date)
-
-# Check if any date is repeated over 3 times
-repeated_dates <- names(date_counts[date_counts > 3])
-
-# Print the repeated dates
-if (length(repeated_dates) > 0) {
-  cat("The following dates are repeated over 3 times:\n")
-  cat(tail(repeated_dates), "\n")  # Use tail() to print the tail of repeated_dates
-
-  # Count the number of repeated dates
-  num_repeated_dates <- length(repeated_dates)
-  cat("Number of repeated dates:", num_repeated_dates, "\n")
-} else {
-  cat("No dates are repeated over 3 times.\n")
-}
-```
-
-
-
-
-
-
-
-Check dates of monitor operation
-```{r}
-what<- subset(Final_df, Site_ID == "02-020-1004/02-020-0018")
-Final_df$Site_No<-as.numeric(Final_df$Site_No)
-what44<- subset(Final_df, Site_No == 44)
-
-```
-
-
-
-
-
-
-
-
-
-
-
 
 
 
